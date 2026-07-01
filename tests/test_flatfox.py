@@ -1,22 +1,21 @@
-"""Tests for the Flatfox portal adapter (newest-scan + client-side filtering)."""
+"""Tests for the Flatfox portal adapter (pin search + batch detail fetch)."""
 from unittest.mock import MagicMock, patch
 
 from src.portals import resolve_portal
-from src.portals.flatfox import FlatfoxPortal, API_LIST
-
-# lat/lng inside the Rapperswil box used in tests below
-SHARED_RAPPI = {"pk": 51159, "url": "/de/flat/8640-rapperswil/51159/", "object_category": "SHARED",
-                "number_of_rooms": "1.0", "livingspace": 15, "city": "Rapperswil SG", "zipcode": 8640,
-                "price_display": 850, "latitude": 47.22, "longitude": 8.82}
-APARTMENT_RAPPI = {"pk": 51160, "url": "/de/flat/x/51160/", "object_category": "APARTMENT",
-                   "city": "Rapperswil SG", "zipcode": 8640, "price_display": 2000,
-                   "latitude": 47.22, "longitude": 8.82}
-SHARED_ZURICH = {"pk": 51161, "url": "/de/flat/x/51161/", "object_category": "SHARED",
-                 "city": "Zürich", "zipcode": 8001, "price_display": 900,
-                 "latitude": 47.37, "longitude": 8.54}  # outside the box
+from src.portals.flatfox import FlatfoxPortal
 
 BOX_URL = ("https://flatfox.ch/de/suche/?object_category=SHARED"
-           "&north=47.235732&south=47.207887&east=8.883600&west=8.767098")
+           "&north=47.32&south=47.13&east=8.95&west=8.68")
+
+PINS = [{"pk": 86149701, "latitude": 47.23, "longitude": 8.83, "price_display": 990},
+        {"pk": 86149697, "latitude": 47.23, "longitude": 8.83, "price_display": 1190}]
+
+DETAILS = [
+    {"pk": 86149701, "url": "/de/flat/8645-jona/86149701/", "city": "Jona", "zipcode": 8645,
+     "price_display": 990, "public_title": "8645 Jona - CHF 990"},
+    {"pk": 86149697, "url": "/de/flat/8645-jona/86149697/", "city": "Jona", "zipcode": 8645,
+     "price_display": 1190, "public_title": "8645 Jona - CHF 1190"},
+]
 
 
 def _json(payload) -> MagicMock:
@@ -25,7 +24,7 @@ def _json(payload) -> MagicMock:
     return r
 
 
-# ── resolution & pure filters ──────────────────────────────────────────────────
+# ── resolution & parsing ───────────────────────────────────────────────────────
 
 def test_resolve_portal_from_url():
     assert resolve_portal({"url": "https://flatfox.ch/de/suche/?object_category=SHARED"}).name == "flatfox"
@@ -34,7 +33,7 @@ def test_resolve_portal_from_url():
 def test_parse_filters_reads_box_and_category():
     bounds, category = FlatfoxPortal._parse_filters(BOX_URL)
     assert category == "SHARED"
-    assert bounds == {"north": 47.235732, "south": 47.207887, "east": 8.883600, "west": 8.767098}
+    assert bounds == {"north": 47.32, "south": 47.13, "east": 8.95, "west": 8.68}
 
 
 def test_parse_filters_defaults_without_geo():
@@ -43,50 +42,38 @@ def test_parse_filters_defaults_without_geo():
     assert category == "SHARED"
 
 
-def test_in_bounds():
-    box = {"north": 47.235732, "south": 47.207887, "east": 8.883600, "west": 8.767098}
-    assert FlatfoxPortal._in_bounds(SHARED_RAPPI, box) is True
-    assert FlatfoxPortal._in_bounds(SHARED_ZURICH, box) is False
-    assert FlatfoxPortal._in_bounds({"latitude": None, "longitude": None}, box) is False
-    assert FlatfoxPortal._in_bounds(SHARED_ZURICH, None) is True  # no box → pass
-
-
-# ── fetch_listings ──────────────────────────────────────────────────────────────
+# ── fetch_listings: pin → by-pk ─────────────────────────────────────────────────
 
 @patch("src.portals.flatfox._get_with_retry")
-def test_fetch_listings_filters_category_and_geo(mock_get):
-    # first call = count, second = the tail page (oldest-first order in the page)
-    mock_get.side_effect = [
-        _json({"count": 3, "results": [{}]}),
-        _json({"count": 3, "results": [SHARED_ZURICH, APARTMENT_RAPPI, SHARED_RAPPI]}),
-    ]
+def test_fetch_listings_pin_then_details(mock_get):
+    # 1st call = pin endpoint, 2nd = public-listing?pk=..
+    mock_get.side_effect = [_json(PINS), _json(DETAILS)]
 
     listings = FlatfoxPortal().fetch_listings({"url": BOX_URL})
 
-    # only the SHARED listing inside the box survives
-    assert len(listings) == 1
-    l = listings[0]
-    assert l.id == "51159"
-    assert l.price == "CHF 850"
-    assert l.location == "8640 Rapperswil SG"
-    assert l.url == "https://flatfox.ch/de/flat/8640-rapperswil/51159/"
+    # pin endpoint was queried with the box + category
+    pin_url = mock_get.call_args_list[0].args[0]
+    assert pin_url.startswith("https://flatfox.ch/api/v1/pin/?")
+    assert "object_category=SHARED" in pin_url and "north=47.32" in pin_url
+    # detail endpoint fetched by the pins' pks
+    detail_url = mock_get.call_args_list[1].args[0]
+    assert "pk=86149701" in detail_url and "pk=86149697" in detail_url
+
+    # mapped + sorted newest (highest pk) first
+    assert [l.id for l in listings] == ["86149701", "86149697"]
+    assert listings[0].price == "CHF 990"
+    assert listings[0].location == "8645 Jona"
+    assert listings[0].url == "https://flatfox.ch/de/flat/8645-jona/86149701/"
 
 
 @patch("src.portals.flatfox._get_with_retry")
-def test_fetch_listings_newest_first(mock_get):
-    # no geo box, category SHARED → both shared kept, newest (page tail) first
-    a = {**SHARED_ZURICH, "pk": 1}
-    b = {**SHARED_ZURICH, "pk": 2}
-    mock_get.side_effect = [
-        _json({"count": 2, "results": [{}]}),
-        _json({"count": 2, "results": [a, b]}),  # ascending → b is newest
-    ]
-    listings = FlatfoxPortal().fetch_listings({"url": "https://flatfox.ch/de/suche/?object_category=SHARED"})
-    assert [l.id for l in listings] == ["2", "1"]
+def test_fetch_listings_empty_pins(mock_get):
+    mock_get.return_value = _json([])
+    assert FlatfoxPortal().fetch_listings({"url": BOX_URL}) == []
 
 
 @patch("src.portals.flatfox._get_with_retry")
-def test_fetch_listings_handles_count_failure(mock_get):
+def test_fetch_listings_pin_fetch_fails(mock_get):
     mock_get.return_value = None
     assert FlatfoxPortal().fetch_listings({"url": BOX_URL}) == []
 

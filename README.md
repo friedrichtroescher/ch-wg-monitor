@@ -20,7 +20,7 @@ On each run the script iterates over all configured `[[searches]]`. Each search 
 
 | Portal | Status | How it fetches |
 |---|---|---|
-| **flatfox** | ✅ working | Public JSON API. The endpoint doesn't accept category/geo filters, so the adapter scans the newest listings (via `offset`) and filters client-side by `object_category` + the lat/lng bounding box parsed from the search URL. No key, no captcha. |
+| **flatfox** | ✅ working | Public JSON API. Uses the map-pin endpoint (`/api/v1/pin/`, server-side filtered by bounding box + `object_category`) to get matching pks, then batch-fetches full listings by pk. Exact box results in ~2 requests. No key, no captcha. |
 | **wgzimmer** | ⚠️ stub | Search is gated by reCAPTCHA v3. Captcha solving (via 2Captcha) is implemented, but wgzimmer only renders results above a v3 *score* that datacenter solvers can't reach — it needs a real headless browser. Left in place for a future Playwright fetch path. |
 | **kleinanzeigen** | legacy | Original HTML scraper, kept as a reference adapter. |
 
@@ -66,7 +66,7 @@ portal = "flatfox"
 url = "https://flatfox.ch/de/suche/?object_category=SHARED&north=47.32&south=47.13&east=8.95&west=8.68"
 max_price = 1200                    # CHF
 addition_prompt = "WG-Zimmer im Umfeld von Rapperswil-Jona, unbefristet, Einzug ab sofort."
-# scan_newest = 300                 # optional: how many of the newest listings to scan per run
+# max_count = 400                   # optional: cap on map pins fetched per box
 ```
 
 ### 5. Run
