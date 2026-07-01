@@ -27,6 +27,22 @@ def test_parse_price_free():
     assert parse_price("Zu verschenken") == 0.0
 
 
+def test_parse_price_chf_dash():
+    assert parse_price("CHF 890.–") == 890.0
+
+
+def test_parse_price_chf_thousands():
+    assert parse_price("CHF 1'450.–") == 1450.0
+
+
+def test_parse_price_chf_decimal():
+    assert parse_price("1'450.50") == 1450.5
+
+
+def test_parse_price_chf_plain():
+    assert parse_price("CHF 850") == 850.0
+
+
 def test_parse_price_unknown():
     assert parse_price("Price unknown") is None
 

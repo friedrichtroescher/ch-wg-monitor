@@ -25,20 +25,23 @@ BROWSER_HEADERS = {
 
 
 def parse_price(price_str: str) -> Optional[float]:
-    """Extract a numeric EUR value from a Kleinanzeigen price string.
+    """Extract a numeric monthly rent value from a portal price string.
 
-    Handles formats like '150 €', 'VB 1.200 €', '3,50 €', 'Zu verschenken'.
+    Handles Swiss CHF formats ("CHF 1'450.–", "890.-", "1'450.50") as well as the legacy
+    EUR/German formats ("150 €", "VB 1.200 €", "3,50 €"). The apostrophe thousands
+    separator and currency/label text are dropped by the [^\\d.,] filter below.
     Returns None for unparseable strings ('Price unknown', free-text, etc.).
     """
     s = price_str.strip().replace("€", "").replace("VB", "").strip()
     if not s or not any(c.isdigit() for c in s):
         return 0.0 if "verschenken" in price_str.lower() else None
     s = re.sub(r"[^\d.,]", "", s)
-    # German format: 1.200,50 → 1200.50 / 1.200 → 1200
+    # German format: 1.200,50 → 1200.50 / 1.200 → 1200 (Swiss uses ' for thousands, . for decimals)
     if "," in s:
         s = s.replace(".", "").replace(",", ".")
     elif re.search(r"\.\d{3}(?:\.|$)", s):
         s = s.replace(".", "")
+    s = s.rstrip(".")  # trailing dot from "CHF 890.–" style prices
     try:
         return float(s)
     except ValueError:
@@ -61,6 +64,26 @@ def _get_with_retry(url: str, retries: int, search_name: str = "") -> Optional[r
                 time.sleep(wait)
             else:
                 log.warning("Error fetching %s: %s – All attempts failed", url, e)
+    return None
+
+
+def _post_with_retry(url: str, data: dict, retries: int, search_name: str = "") -> Optional[requests.Response]:
+    """POST form data with the same retry/backoff and 403/429 telemetry as _get_with_retry."""
+    for attempt in range(1 + retries):
+        try:
+            resp = requests.post(url, data=data, headers=BROWSER_HEADERS, timeout=15)
+            if resp.status_code in (403, 429):
+                scrape_rejections.add(1, {"http.status_code": resp.status_code, "search.name": search_name})
+                log.warning("Scraping rejected (%d) for %s", resp.status_code, url)
+            resp.raise_for_status()
+            return resp
+        except requests.RequestException as e:
+            if attempt < retries:
+                wait = 5 * (attempt + 1)
+                log.warning("Error posting %s: %s – Retry %d/%d in %ds", url, e, attempt + 1, retries, wait)
+                time.sleep(wait)
+            else:
+                log.warning("Error posting %s: %s – All attempts failed", url, e)
     return None
 
 

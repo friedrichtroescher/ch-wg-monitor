@@ -1,5 +1,5 @@
 [project]
-name = "kleinanzeigen-monitor"
+name = "ch-wg-monitor"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [

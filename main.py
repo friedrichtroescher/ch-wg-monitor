@@ -7,10 +7,11 @@ import time
 from src import telemetry
 from src.config import resolve, search_label, setup_parser, load_app_config, get_searches, list_searches, add_search
 from src.evaluator import evaluate_listing
-from src.fetcher import fetch_listings, parse_price
+from src.fetcher import parse_price
 from src.models.app_config import AppConfig
 from src.notifier import format_message, send_telegram, send_test_message
 from src.persistence import load_seen, save_seen
+from src.portals import resolve_portal
 from src.telemetry import init_telemetry, shutdown_telemetry, tracer
 
 log = logging.getLogger(__name__)
@@ -37,10 +38,11 @@ def run_monitor(app: AppConfig) -> None:
 
         for search in searches:
             url = search.get("url")
-            if not url:
-                log.warning("Search has no URL – skipped.")
+            if not url and not search.get("portal"):
+                log.warning("Search has neither URL nor portal – skipped.")
                 continue
 
+            portal = resolve_portal(search)
             deep_eval = resolve(search, config, "deep_eval", False)
             max_price = resolve(search, config, "max_price", None)
             label = search_label(search)
@@ -48,7 +50,8 @@ def run_monitor(app: AppConfig) -> None:
 
             with tracer.start_as_current_span("process_search", attributes={
                 "search.name": label,
-                "search.url": url,
+                "search.url": url or "",
+                "search.portal": portal.name,
                 "search.max_price": str(max_price) if max_price is not None else "",
                 "search.deep_eval": deep_eval,
             }):
@@ -59,8 +62,8 @@ def run_monitor(app: AppConfig) -> None:
                           telemetry.scrape_rejections):
                     c.add(0, attrs)
                 search_start = time.monotonic()
-                log.info("Crawling: %s (max_price=%s, deep_eval=%s)", url, max_price, deep_eval)
-                listings = fetch_listings(url, retries=retries, search_name=label)
+                log.info("Crawling [%s]: %s (max_price=%s, deep_eval=%s)", portal.name, url, max_price, deep_eval)
+                listings = portal.fetch_listings(search, retries=retries, search_name=label)
                 log.info("%d listings found", len(listings))
                 monitored_listings += len(listings)
                 telemetry.listings_fetched.add(len(listings), attrs)
@@ -77,7 +80,7 @@ def run_monitor(app: AppConfig) -> None:
                     if max_price is not None and listing_price is not None and listing_price > max_price:
                         new_seen.add(listing.id)
                         telemetry.listing_price.record(listing_price, attrs)
-                        log.info("  -> price %.0f € exceeds limit %d € — skipped", listing_price, max_price)
+                        log.info("  -> price %.0f CHF exceeds limit %d CHF — skipped", listing_price, max_price)
                         time.sleep(0.5)
                         continue
 
@@ -88,6 +91,7 @@ def run_monitor(app: AppConfig) -> None:
                         deep_eval=deep_eval,
                         retries=retries,
                         search_name=label,
+                        portal=portal,
                     )
 
                     if evaluation.error:

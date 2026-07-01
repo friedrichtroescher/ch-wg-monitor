@@ -32,17 +32,35 @@ common_prompt = "I'm looking for used items in good condition at fair prices."
 # deep_eval = false
 # max_price = 0
 
-# Searches – add as many [[searches]] blocks as needed
-# Required: url - just hop on Kleinanzeigen and create the search you need.
-# Add the location filter on the website, if you want one.
-# Optional: max_price, deep_eval (override global above), addition_prompt
+# Searches – add as many [[searches]] blocks as needed.
+#
+# portal: which site to scrape. Optional — inferred from the URL host if omitted.
+#         Supported: "flatfox" (flatfox.ch, JSON API), "kleinanzeigen" (legacy).
+#         "wgzimmer" (wgzimmer.ch) is planned.
+# url:    build the search on the portal's website (set your region/filters), then paste the URL.
+#         For flatfox, paste the frontend search URL (…/de/suche/?…) — its query params
+#         (map area, filters) are forwarded to the Flatfox API automatically.
+# Optional: max_price (CHF), deep_eval (override global above), addition_prompt.
 [[searches]]
-url = "https://www.kleinanzeigen.de/s-beispiel/k0"
-max_price = 500
-deep_eval = true
-addition_prompt = "Enter evaluation criteria here, e.g. size, condition, model."
+portal = "flatfox"
+url = "https://flatfox.ch/de/suche/?object_category=SHARED&north=47.43&south=47.32&east=8.62&west=8.45"
+max_price = 1200
+addition_prompt = "WG-Zimmer in Zürich, unbefristet, Einzug ab sofort, ruhige Lage bevorzugt."
 
 [[searches]]
-url = "https://www.kleinanzeigen.de/s-anderes-beispiel/k0"
-# max_price and deep_eval not set → inherits from [assistant] if set, else built-in defaults
-addition_prompt = "Another search with different criteria."
+portal = "flatfox"
+url = "https://flatfox.ch/de/suche/?object_category=SHARED"
+# no location filter → all Swiss WG rooms; max_price/deep_eval inherit from [assistant] or defaults
+addition_prompt = "Möbliertes Zimmer, WG mit max. 4 Personen."
+
+# wgzimmer: adapter exists but is currently NON-FUNCTIONAL — its search is gated by
+# reCAPTCHA v3, which returns no results for datacenter-solved tokens (would need a headless
+# browser). Left here for reference; enable only once a Playwright fetch path exists.
+# Requires CAPTCHA_API_KEY (2captcha) + deep_eval = true. Canton slug e.g. "rapperswil-jona".
+# [[searches]]
+# portal = "wgzimmer"
+# state = "rapperswil-jona"
+# permanent = true
+# max_price = 1200
+# deep_eval = true
+# addition_prompt = "WG-Zimmer im Umfeld von Rapperswil."

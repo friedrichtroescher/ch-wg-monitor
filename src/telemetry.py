@@ -25,9 +25,9 @@ prefilter_rejections = meter.create_counter("monitor.evaluations.prefilter_rejec
 detail_fetch_failures = meter.create_counter("monitor.listings.detail_fetch_failures",
                                              description="Detail page fetch failures during deep_eval")
 listing_price = meter.create_histogram(
-    "monitor.listings.price_euros",
-    description="Listing prices in EUR per search",
-    unit="EUR",
+    "monitor.listings.price_chf",
+    description="Listing rent prices in CHF per search",
+    unit="CHF",
 )
 run_last_success = meter.create_gauge(
     "monitor.run.last_success_time",

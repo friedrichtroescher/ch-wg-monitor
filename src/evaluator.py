@@ -56,6 +56,7 @@ def evaluate_listing(
         deep_eval: bool = False,
         retries: int = 3,
         search_name: str = "",
+        portal=None,
 ) -> EvaluationResult:
     with tracer.start_as_current_span("evaluate_listing", attributes={
         "listing.id": listing.id,
@@ -77,7 +78,11 @@ def evaluate_listing(
                 span.set_attribute("evaluation.match", False)
                 return step1
 
-            listing_details = fetch_listing_details(listing.url, retries=retries, search_name=search_name)
+            listing_details = (
+                portal.fetch_details(listing, retries=retries, search_name=search_name)
+                if portal is not None
+                else fetch_listing_details(listing.url, retries=retries, search_name=search_name)
+            )
             if not listing_details.description and not listing_details.attributes:
                 detail_fetch_failures.add(1, {"search.name": search_name})
                 log.warning("  -> step2 fetch failed, using step1 result (no detail)")
