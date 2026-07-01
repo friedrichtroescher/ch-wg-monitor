@@ -1,40 +1,43 @@
-# Kleinanzeigen Monitor
+# CH WG Monitor
 
-Crawls Kleinanzeigen searches, evaluates listings via AI through OpenRouter, and sends matches via Telegram.
+Monitors Swiss flatshare (WG) portals, evaluates each listing via AI through OpenRouter, and sends matches via Telegram.
+
+Forked from a Kleinanzeigen used-goods monitor; the AI evaluation, Telegram notification, deduplication, config and telemetry are portal-agnostic — only fetching/parsing is per-portal.
 
 ## How it works
 
 ```
-Kleinanzeigen URL → parse HTML → AI evaluates → Telegram message
+portal search → fetch listings → AI evaluates → Telegram message
 ```
 
-On each run the script iterates over all configured `[[searches]]`. For each search, current listings are scraped from Kleinanzeigen. Every listing not yet in `seen.json` is sent to a language model via [OpenRouter](https://openrouter.ai). The model evaluates based on `profile`, `max_price`, and `prompt` whether the listing is a match. On `match: true` a Telegram message is sent.
+On each run the script iterates over all configured `[[searches]]`. Each search names a **portal** (adapter) and its filter. Current listings are fetched, and every listing not yet in `seen.json` is sent to a language model via [OpenRouter](https://openrouter.ai), which decides — based on `common_prompt`, `max_price` (CHF) and `addition_prompt` — whether it is a match. On `match: true` a Telegram message is sent.
 
-**Deduplication**: All seen listing IDs are stored in `seen.json`.
+**Deduplication**: all seen listing IDs are stored in `seen.json`. Listings whose evaluation errored are *not* stored, so they are retried next run.
 
-**Scheduling**: `setup.sh` registers cron jobs that run at the times configured in `config.toml`.
+**deep_eval** (optional, 2-step): a cheap prefilter on title/price, then a detail-page fetch for a thorough second evaluation.
 
-**Price pre-check**: When `max_price` is set and the listing price can be parsed (e.g. "150 €", "VB 1.200 €"), the script rejects over-budget listings *before* calling the AI — saving API costs. Listings with unparseable prices (e.g. just "VB") are forwarded to the model, which then evaluates the price text itself.
+## Portals
 
-**Price tracking**: The script records a price histogram per search (`monitor.listings.price_euros`) for Grafana dashboards. Only relevant listings are tracked (AI matches + over-budget items). If you set a price filter directly in the Kleinanzeigen URL (e.g. `preis::500`), Kleinanzeigen will only return listings within that range — the histogram then only reflects that filtered range, not the full market. For accurate price range tracking, use `max_price` in `config.toml` instead of URL price filters.
+| Portal | Status | How it fetches |
+|---|---|---|
+| **flatfox** | ✅ working | Public JSON API. The endpoint doesn't accept category/geo filters, so the adapter scans the newest listings (via `offset`) and filters client-side by `object_category` + the lat/lng bounding box parsed from the search URL. No key, no captcha. |
+| **wgzimmer** | ⚠️ stub | Search is gated by reCAPTCHA v3. Captcha solving (via 2Captcha) is implemented, but wgzimmer only renders results above a v3 *score* that datacenter solvers can't reach — it needs a real headless browser. Left in place for a future Playwright fetch path. |
+| **kleinanzeigen** | legacy | Original HTML scraper, kept as a reference adapter. |
+
+Portal is chosen per search via `portal = "..."`, or inferred from the URL host.
 
 ## Setup
 
-### 1. Create a Telegram bot
+### 1. Telegram bot
 
-1. Open [@BotFather](https://t.me/BotFather) on Telegram
-2. Send `/newbot`
-3. Choose a name and username (username must end in `bot`, e.g. `my_monitor_bot`)
-4. Copy the displayed **bot token** (`123456789:AAF...`)
+1. Open [@BotFather](https://t.me/BotFather), send `/newbot`, pick a name + username ending in `bot`.
+2. Copy the **bot token** (`123456789:AAF...`).
+3. Message the bot once, then open `https://api.telegram.org/bot<TOKEN>/getUpdates` and copy `"chat":{"id":...}`.
 
-Get your chat ID:
-1. Send a message to the new bot
-2. Open in browser: `https://api.telegram.org/bot<TOKEN>/getUpdates`
-3. Copy `"chat":{"id":...}` from the response
+### 2. API keys
 
-### 2. Get API keys
-
-- **OpenRouter**: Create an account at [openrouter.ai](https://openrouter.ai) → API Keys → create key
+- **OpenRouter**: account at [openrouter.ai](https://openrouter.ai) → API Keys.
+- **2Captcha** (only if you enable wgzimmer): key at [2captcha.com](https://2captcha.com).
 
 ### 3. Fill in `.env`
 
@@ -46,45 +49,44 @@ cp .env.example .env
 OPENROUTER_API_KEY=sk-or-v1-...
 TELEGRAM_BOT_TOKEN=123456789:AAF...
 TELEGRAM_CHAT_ID=987654321
+# CAPTCHA_API_KEY=...        # only for wgzimmer
 ```
 
 ### 4. Configure searches
 
-Edit `config.toml` — one `[[searches]]` block per search:
+Edit `config.toml` — one `[[searches]]` block per search. For **flatfox**, build the search on [flatfox.ch](https://flatfox.ch/de/suche/) (draw the map area, set filters) and paste the URL; its `object_category` + `north/south/east/west` bounds are used as the filter.
 
 ```toml
 [assistant]
-profile = "I'm looking for used items in good condition at fair prices."
+common_prompt = "Ich suche ein WG-Zimmer in der Schweiz. Preise sind in CHF pro Monat."
+deep_eval = true
 
 [[searches]]
-name = "road-bike"
-url = "https://www.kleinanzeigen.de/s-rennrad/k0"
-max_price = 800
-prompt = "Frame 54-56cm, at least Shimano 105, no rust"
+portal = "flatfox"
+url = "https://flatfox.ch/de/suche/?object_category=SHARED&north=47.32&south=47.13&east=8.95&west=8.68"
+max_price = 1200                    # CHF
+addition_prompt = "WG-Zimmer im Umfeld von Rapperswil-Jona, unbefristet, Einzug ab sofort."
+# scan_newest = 300                 # optional: how many of the newest listings to scan per run
 ```
 
-Just copy the `url` from your browser after searching on Kleinanzeigen.
-
-### 5. Install and test
+### 5. Run
 
 ```bash
-./setup.sh
-./monitor --test-telegram       # Send a test message via Telegram
-./monitor run                   # Single run
-crontab -l                      # Check cron jobs
+uv run main.py run                     # normal run
+uv run main.py run --dry-run           # evaluate but don't send Telegram
+uv run main.py run --test-telegram     # verify Telegram config
+uv run pytest tests/ -v                # tests
 ```
 
 ### 6. OpenTelemetry (optional)
 
-The monitor can export traces, metrics, and logs via OTLP/HTTP. To enable, set the endpoint in `.env`:
+Exports traces, metrics and logs via OTLP/HTTP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (no-op otherwise).
 
 ```
 OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp-gateway-prod-eu-west-2.grafana.net/otlp
-OTEL_SERVICE_NAME=kleinanzeigen-monitor        # optional, defaults to kleinanzeigen-monitor
-DEPLOYMENT_ENVIRONMENT=production               # optional, defaults to production
+OTEL_SERVICE_NAME=ch-wg-monitor
+DEPLOYMENT_ENVIRONMENT=production
 ```
-
-If `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, telemetry is a no-op — no extra dependencies are loaded.
 
 **Exported metrics:**
 
@@ -93,27 +95,17 @@ If `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, telemetry is a no-op — no extra dep
 | `monitor.listings.fetched` | Counter | Total listings fetched |
 | `monitor.listings.new` | Counter | New listings evaluated |
 | `monitor.listings.matched` | Counter | Matched listings sent |
-| `monitor.listings.price_euros` | Histogram | Listing prices in EUR per search |
+| `monitor.listings.price_chf` | Histogram | Listing rent prices in CHF per search |
 | `monitor.evaluations.errors` | Counter | Evaluation errors |
 | `monitor.evaluations.prefilter_rejections` | Counter | Listings rejected by the deep_eval prefilter |
 | `monitor.listings.detail_fetch_failures` | Counter | Detail page fetch failures during deep_eval |
-| `monitor.scrape.rejections` | Counter | Scraping rejected by Kleinanzeigen (403/429) |
+| `monitor.scrape.rejections` | Counter | Scraping rejected by a portal (403/429) |
 | `monitor.run.duration_seconds` | Histogram | Total run duration |
 | `monitor.search.duration_seconds` | Histogram | Duration of a single search |
+| `monitor.run.last_success_time` | Gauge | Unix epoch of last successful run (heartbeat) |
 
-Traces auto-instrument all `requests` HTTP calls. Logs are forwarded from Python's `logging` module.
+Traces auto-instrument all `requests` HTTP calls; logs are forwarded from Python's `logging`.
 
-### 7. Add `monitor` to your PATH (if you want)
+## Deployment
 
-Add the project directory to your PATH to use `monitor` as a global command:
-
-```bash
-echo 'export PATH="$HOME/path/to/kleinanzeigen-monitor:$PATH"' >> ~/.zshrc
-source ~/.zshrc
-```
-
-Then run from anywhere:
-
-```bash
-monitor run
-```
+Runs as a Kubernetes CronJob on Hetzner k3s via ArgoCD, with a Grafana dashboard + heartbeat alert — see the `ch-wg-monitor/` and `terraform/grafana/` directories in the `troescher-gitops` repo. The image is built and pushed to `ghcr.io/<owner>/ch-wg-monitor:latest` by `.github/workflows/build.yaml` on push to `main`.
